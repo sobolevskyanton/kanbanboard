@@ -21,3 +21,8 @@
 
 # macos
 .DS_Store
+
+#build files .NET / MSBuild / Visual Studio
+*.user
+*.suo
+*.cache
