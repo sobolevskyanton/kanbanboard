@@ -11,6 +11,7 @@ interface Task {
   assigneeId?: string;
 
   reviewedBy?: string;
+  reviewedDate?: string;
   estimate?: string;
   completionDate?: string;
 
@@ -27,6 +28,7 @@ interface Task {
   order?: number;
   topic?: string;
   comment?: string;
+  displayOrder?: number;
 }
 
 interface KanbanContext {
@@ -420,21 +422,37 @@ export class KanbanBoard {
     if (draggedIndex < 0 || targetIndex < 0) return;
 
     const draggedTask = this._tasks[draggedIndex];
+    const fromBucket = (draggedTask.status || "todo").toLowerCase();
+    const newBucketId = targetBucketId.toLowerCase();
+
+    const allowedTransitions: Record<string, string[]> = {
+      todo: ["todo", "inprogress"],
+      inprogress: ["inprogress", "todo", "done"],
+      done: ["done", "inprogress", "reviewed"],
+      reviewed: ["reviewed", "done", "inprogress"],
+    };
+    if (!allowedTransitions[fromBucket]?.includes(newBucketId)) {
+      return;
+    }
 
     // ensure correct bucket/status
     draggedTask.status = targetBucketId;
 
     const today = new Date().toISOString().split("T")[0];
-    const newBucketId = targetBucketId.toLowerCase();
 
     if (newBucketId === "inprogress" && !draggedTask.startDate) {
       draggedTask.startDate = today;
     }
 
-    if (newBucketId === "done") {
+    if (newBucketId === "done" && !draggedTask.completionDate) {
       draggedTask.completionDate = today;
-    } else if (newBucketId === "inprogress") {
+    } else if (newBucketId === "inprogress" || newBucketId === "todo") {
       draggedTask.completionDate = "";
+    }
+
+    if (newBucketId !== "reviewed") {
+      draggedTask.reviewedBy = "";
+      draggedTask.reviewedDate = "";
     }
 
     // remove dragged item
@@ -452,6 +470,11 @@ export class KanbanBoard {
 
     // outputs (bucket moved still matters)
     this.normalizeBucketOrder(targetBucketId);
+
+    if (fromBucket !== newBucketId) {
+      this.normalizeBucketOrder(fromBucket);
+    }
+
     this._updatedTaskId = draggedTask.id;
     this._newStatus = targetBucketId;
     this._actionTrigger = Date.now().toString();
@@ -594,20 +617,36 @@ export class KanbanBoard {
 
         const task = this._tasks.find((t) => t.id === this._draggedTaskId);
         if (task) {
-          const fromBucket = task.status;
+          const fromBucket = (task.status || "todo").toLowerCase();
+          const newBucketId = bucket.id.toLowerCase();
+          const allowedTransitions: Record<string, string[]> = {
+            todo: ["todo", "inprogress"],
+            inprogress: ["inprogress", "todo", "done"],
+            done: ["done", "inprogress", "reviewed"],
+            reviewed: ["reviewed", "done", "inprogress"],
+          };
+          if (!allowedTransitions[fromBucket]?.includes(newBucketId)) {
+            this._draggedTaskId = null;
+            this.updateViewSafe();
+            return;
+          }
           task.status = bucket.id;
 
           const today = new Date().toISOString().split("T")[0];
-          const newBucketId = bucket.id.toLowerCase();
 
           if (newBucketId === "inprogress" && !task.startDate) {
             task.startDate = today;
           }
 
-          if (newBucketId === "done") {
+          if (newBucketId === "done" && !task.completionDate) {
             task.completionDate = today;
-          } else if (newBucketId === "inprogress") {
+          } else if (newBucketId === "inprogress" || newBucketId === "todo") {
             task.completionDate = "";
+          }
+
+          if (newBucketId !== "reviewed") {
+            task.reviewedBy = "";
+            task.reviewedDate = "";
           }
 
           // put at end
@@ -953,6 +992,20 @@ export class KanbanBoard {
         const header = document.createElement("div");
         header.className = "task-header";
 
+        if (task.displayOrder !== undefined) {
+          const orderBadge = document.createElement("div");
+          orderBadge.className = "card-order-badge";
+          orderBadge.innerText = `#${task.displayOrder}`;
+          header.appendChild(orderBadge);
+        }
+
+        if (task.topic !== undefined) {
+          const topic = document.createElement("div");
+          topic.className = "card-topic";
+          topic.innerText = `${task.topic}`;
+          header.appendChild(topic);
+        }
+
         const title = document.createElement("div");
         title.className = "card-title";
         title.innerText = task.title;
@@ -983,13 +1036,13 @@ export class KanbanBoard {
         const bucketId = (bucket.id || "").toLowerCase();
 
         if (bucketId === "todo") {
-          meta.innerText = `Estimate: ${task.estimate || ""}`;
+          meta.innerText = `Estimate: ${task.estimate || ""}d`;
         } else if (bucketId === "inprogress") {
           meta.innerText = `Start Date: ${task.startDate || ""}`;
         } else if (bucketId === "done") {
           meta.innerText = `Finish Date: ${task.completionDate || ""}`;
         } else if (bucketId === "reviewed") {
-          meta.innerText = `Reviewed by: ${task.reviewedBy || ""}`;
+          meta.innerText = `Reviewed by: ${task.reviewedBy || ""}\nReviewed Date: ${task.reviewedDate || ""}`;
         }
 
         content.appendChild(meta);
@@ -1175,20 +1228,37 @@ export class KanbanBoard {
 
         const t = this._tasks.find((x) => x.id === this._draggedTaskId);
         if (t) {
-          const fromBucket = t.status;
+          const fromBucket = (t.status || "todo").toLowerCase();
+          const newBucketId = bucket.id.toLowerCase();
+          const allowedTransitions: Record<string, string[]> = {
+            todo: ["todo", "inprogress"],
+            inprogress: ["inprogress", "todo", "done"],
+            done: ["done", "inprogress", "reviewed"],
+            reviewed: ["reviewed", "done", "inprogress"],
+          };
+          if (!allowedTransitions[fromBucket]?.includes(newBucketId)) {
+            this._draggedTaskId = null;
+            this._dropTargetId = null;
+            this.updateViewSafe();
+            return;
+          }
           t.status = bucket.id;
 
           const today = new Date().toISOString().split("T")[0];
-          const newBucketId = bucket.id.toLowerCase();
 
           if (newBucketId === "inprogress" && !t.startDate) {
             t.startDate = today;
           }
 
-          if (newBucketId === "done") {
+          if (newBucketId === "done" && !t.completionDate) {
             t.completionDate = today;
-          } else if (newBucketId === "inprogress") {
+          } else if (newBucketId === "inprogress" || newBucketId === "todo") {
             t.completionDate = "";
+          }
+
+          if (newBucketId !== "reviewed") {
+            t.reviewedBy = "";
+            t.reviewedDate = "";
           }
 
           // force to end by order
