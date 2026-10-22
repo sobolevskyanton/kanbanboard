@@ -25,7 +25,6 @@ interface Task {
 
   // keep this because you already have it in your JSON
   progress: string;
-  order?: number;
   topic?: string;
   comment?: string;
   displayOrder?: number;
@@ -49,7 +48,6 @@ export class KanbanBoard {
       assign: "Assign",
       assignTo: "Assign to:",
       deadline: "Deadline:",
-      dropHereBottom: "Drop here to place at bottom",
       status: "Status",
       bucket: "Bucket",
       startDate: "Start date",
@@ -91,7 +89,6 @@ export class KanbanBoard {
       assign: "Przypisz",
       assignTo: "Przypisano do:",
       deadline: "Termin:",
-      dropHereBottom: "Upuść tutaj, aby umieścić na końcu",
       status: "Status",
       bucket: "Bucket",
       startDate: "Data rozpoczęcia",
@@ -296,6 +293,42 @@ export class KanbanBoard {
     task.isOverdue = this.getTimingInfo(task, newBucketId).overdue;
   }
 
+  // Order of cards inside a bucket: working buckets show the most recent tasks
+  // first, everything else follows the internship order (displayOrder).
+  private compareTasksInBucket(bucketId: string): (a: Task, b: Task) => number {
+    const byDisplayOrder = (a: Task, b: Task): number => {
+      const x = Number(a.displayOrder);
+      const y = Number(b.displayOrder);
+      const xMissing = a.displayOrder == null || isNaN(x);
+      const yMissing = b.displayOrder == null || isNaN(y);
+      if (xMissing || yMissing) return Number(xMissing) - Number(yMissing);
+      return x - y;
+    };
+
+    const dateOf: ((t: Task) => string | undefined) | null =
+      bucketId === "inprogress"
+        ? (t) => t.startDate
+        : bucketId === "done"
+          ? (t) => t.completionDate
+          : bucketId === "reviewed"
+            ? (t) => t.reviewedDate || t.completionDate
+            : null;
+
+    if (!dateOf) return byDisplayOrder;
+
+    return (a, b) => {
+      const x = dateOf(a) || "";
+      const y = dateOf(b) || "";
+      // yyyy-mm-dd compares correctly as a string; tasks without a date go last
+      if (x !== y) {
+        if (!x) return 1;
+        if (!y) return -1;
+        return y.localeCompare(x);
+      }
+      return byDisplayOrder(a, b);
+    };
+  }
+
   private _container!: HTMLDivElement;
   private _notifyOutputChanged!: () => void;
   private _readOnly = false;
@@ -322,8 +355,6 @@ export class KanbanBoard {
   private _flashTimer: number | null = null;
   private _taskModalTaskId: string | null = null;
   private _taskDraft: Partial<Task> | null = null;
-  private _dropTargetId: string | null = null;
-  private _dropPlaceAfter = false;
   private _confirmDeleteTaskId: string | null = null;
   private _confirmDeleteTaskTitle = "";
 
@@ -357,15 +388,6 @@ export class KanbanBoard {
     document.addEventListener("click", this.handleDocumentClick);
   }
 
-  private normalizeBucketOrder(bucketId: string): void {
-    const bucketTasks = this._tasks
-      .filter((t) => (t.status || "").toLowerCase() === bucketId.toLowerCase())
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-    // renumber in nice gaps so future inserts are easy
-    bucketTasks.forEach((t, i) => (t.order = (i + 1) * 10));
-  }
-
   private closeTaskModal(save: boolean): void {
     if (!this._readOnly && save && this._taskModalTaskId && this._taskDraft) {
       const id = this._taskModalTaskId;
@@ -379,8 +401,6 @@ export class KanbanBoard {
         const isModified = oldComment !== newComment;
 
         if (isModified) {
-          const beforeStatus = this._tasks[idx].status;
-
           // commit draft -> real task
           this._tasks[idx] = {
             ...this._tasks[idx],
@@ -388,14 +408,6 @@ export class KanbanBoard {
           } as Task;
 
           const afterStatus = this._tasks[idx].status;
-
-          // keep order sane
-          if (beforeStatus !== afterStatus) {
-            this.normalizeBucketOrder(beforeStatus);
-            this.normalizeBucketOrder(afterStatus);
-          } else {
-            this.normalizeBucketOrder(afterStatus);
-          }
 
           // outputs for Power Apps
           this._updatedTaskId = id;
@@ -517,61 +529,6 @@ export class KanbanBoard {
 
     overlay.appendChild(modal);
     this._container.appendChild(overlay);
-  }
-
-  private moveTaskRelative(
-    draggedId: string,
-    targetId: string,
-    placeAfter: boolean,
-    targetBucketId: string,
-  ): void {
-    if (draggedId === targetId) return;
-
-    const draggedIndex = this._tasks.findIndex((t) => t.id === draggedId);
-    const targetIndex = this._tasks.findIndex((t) => t.id === targetId);
-    if (draggedIndex < 0 || targetIndex < 0) return;
-
-    const draggedTask = this._tasks[draggedIndex];
-    const fromBucket = (draggedTask.status || "todo").toLowerCase();
-    const newBucketId = targetBucketId.toLowerCase();
-
-    const allowedTransitions: Record<string, string[]> = {
-      todo: ["todo", "inprogress"],
-      inprogress: ["inprogress", "todo", "done"],
-      done: ["done", "inprogress", "reviewed"],
-      reviewed: ["reviewed", "done", "inprogress"],
-    };
-    if (!allowedTransitions[fromBucket]?.includes(newBucketId)) {
-      return;
-    }
-
-    // ensure correct bucket/status and dates
-    this.applyStatusTransition(draggedTask, targetBucketId);
-
-    // remove dragged item
-    this._tasks.splice(draggedIndex, 1);
-
-    // target index may change after removal
-    const newTargetIndex = this._tasks.findIndex((t) => t.id === targetId);
-    if (newTargetIndex < 0) {
-      this._tasks.push(draggedTask);
-      return;
-    }
-
-    const insertIndex = placeAfter ? newTargetIndex + 1 : newTargetIndex;
-    this._tasks.splice(insertIndex, 0, draggedTask);
-
-    // outputs (bucket moved still matters)
-    this.normalizeBucketOrder(targetBucketId);
-
-    if (fromBucket !== newBucketId) {
-      this.normalizeBucketOrder(fromBucket);
-    }
-
-    this._updatedTaskId = draggedTask.id;
-    this._newStatus = targetBucketId;
-    this._actionTrigger = Date.now().toString();
-    this._notifyOutputChanged();
   }
 
   public updateView(context: KanbanContext): void {
@@ -701,10 +658,22 @@ export class KanbanBoard {
       });
 
       // ================= DRAG & DROP =================
-      column.addEventListener("dragover", (e) => e.preventDefault());
+      // Cards don't handle drops themselves: a drop anywhere in the column
+      // lands here, and the card position comes from compareTasksInBucket.
+      column.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        column.classList.add("drag-over");
+      });
+
+      column.addEventListener("dragleave", (e) => {
+        if (!column.contains(e.relatedTarget as Node | null)) {
+          column.classList.remove("drag-over");
+        }
+      });
 
       column.addEventListener("drop", (e) => {
         e.preventDefault();
+        column.classList.remove("drag-over");
 
         if (!this._draggedTaskId) return;
 
@@ -713,10 +682,10 @@ export class KanbanBoard {
           const fromBucket = (task.status || "todo").toLowerCase();
           const newBucketId = bucket.id.toLowerCase();
           const allowedTransitions: Record<string, string[]> = {
-            todo: ["todo", "inprogress"],
-            inprogress: ["inprogress", "todo", "done"],
-            done: ["done", "inprogress", "reviewed"],
-            reviewed: ["reviewed", "done", "inprogress"],
+            todo: ["inprogress"],
+            inprogress: ["todo", "done"],
+            done: ["inprogress", "reviewed"],
+            reviewed: ["done", "inprogress"],
           };
           if (!allowedTransitions[fromBucket]?.includes(newBucketId)) {
             this._draggedTaskId = null;
@@ -724,16 +693,6 @@ export class KanbanBoard {
             return;
           }
           this.applyStatusTransition(task, bucket.id);
-
-          // put at end
-          const bucketTasks = this._tasks.filter(
-            (t) => (t.status || "").toLowerCase() === bucket.id.toLowerCase(),
-          );
-          task.order = bucketTasks.length * 10;
-
-          this.normalizeBucketOrder(bucket.id);
-          if (fromBucket && fromBucket !== bucket.id)
-            this.normalizeBucketOrder(fromBucket);
 
           this._updatedTaskId = task.id;
           this._newStatus = bucket.id;
@@ -977,17 +936,12 @@ export class KanbanBoard {
         .filter(
           (t) => (t.status || "").toLowerCase() === bucket.id.toLowerCase(),
         )
-        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        .sort(this.compareTasksInBucket(bucket.id.toLowerCase()));
 
       columnTasks.forEach((task) => {
         const card = document.createElement("div");
         card.className = "card";
 
-        if (this._dropTargetId === task.id) {
-          card.classList.add(
-            this._dropPlaceAfter ? "drop-after" : "drop-before",
-          );
-        }
         card.addEventListener("click", () => {
           this._taskModalTaskId = task.id;
 
@@ -1023,46 +977,6 @@ export class KanbanBoard {
 
         card.addEventListener("dragend", () => {
           this._draggedTaskId = null;
-        });
-
-        card.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-
-          const rect = card.getBoundingClientRect();
-          const dropY = e.clientY - rect.top;
-          const after = dropY > rect.height / 2;
-
-          card.classList.toggle("drop-before", !after);
-          card.classList.toggle("drop-after", after);
-        });
-
-        card.addEventListener("dragleave", () => {
-          card.classList.remove("drop-before");
-          card.classList.remove("drop-after");
-        });
-
-        card.addEventListener("drop", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-
-          if (!this._draggedTaskId) return;
-
-          // decide before/after based on cursor position
-          const rect = card.getBoundingClientRect();
-          const dropY = e.clientY - rect.top;
-          const placeAfter = dropY > rect.height / 2;
-
-          this.moveTaskRelative(
-            this._draggedTaskId,
-            task.id,
-            placeAfter,
-            bucket.id,
-          );
-
-          this._draggedTaskId = null;
-          this._dropTargetId = null;
-          this.updateViewSafe();
         });
 
         const header = document.createElement("div");
@@ -1284,75 +1198,6 @@ export class KanbanBoard {
 
         column.appendChild(card);
       });
-
-      // --- DROP TO BOTTOM ZONE (always last in column) ---
-      const dropZone = document.createElement("div");
-      dropZone.className = "column-drop-zone";
-      dropZone.innerText = this.t("dropHereBottom");
-
-      dropZone.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        dropZone.classList.add("is-over");
-      });
-
-      dropZone.addEventListener("dragleave", (e) => {
-        dropZone.classList.remove("is-over");
-      });
-
-      dropZone.addEventListener("drop", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropZone.classList.remove("is-over");
-
-        if (!this._draggedTaskId) return;
-
-        const t = this._tasks.find((x) => x.id === this._draggedTaskId);
-        if (t) {
-          const fromBucket = (t.status || "todo").toLowerCase();
-          const newBucketId = bucket.id.toLowerCase();
-          const allowedTransitions: Record<string, string[]> = {
-            todo: ["todo", "inprogress"],
-            inprogress: ["inprogress", "todo", "done"],
-            done: ["done", "inprogress", "reviewed"],
-            reviewed: ["reviewed", "done", "inprogress"],
-          };
-          if (!allowedTransitions[fromBucket]?.includes(newBucketId)) {
-            this._draggedTaskId = null;
-            this._dropTargetId = null;
-            this.updateViewSafe();
-            return;
-          }
-          this.applyStatusTransition(t, bucket.id);
-
-          // force to end by order
-          const bucketTasks = this._tasks.filter(
-            (x) =>
-              (x.status || "").toLowerCase() === bucket.id.toLowerCase() &&
-              x.id !== t.id,
-          );
-          const maxOrder = bucketTasks.reduce(
-            (m, x) => Math.max(m, x.order ?? 0),
-            0,
-          );
-          t.order = maxOrder + 10;
-
-          this.normalizeBucketOrder(bucket.id);
-          if (fromBucket && fromBucket !== bucket.id)
-            this.normalizeBucketOrder(fromBucket);
-
-          this._updatedTaskId = t.id;
-          this._newStatus = bucket.id;
-
-          this._actionTrigger = Date.now().toString();
-          this._notifyOutputChanged();
-        }
-
-        this._draggedTaskId = null;
-        this._dropTargetId = null;
-        this.updateViewSafe();
-      });
-
-      column.appendChild(dropZone);
 
       return column;
     };

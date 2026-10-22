@@ -39,7 +39,7 @@ All data moves as JSON strings through `SingleLine.Text` properties. The control
 
 - **Inputs (bound):** `tasksJson`, `bucketsJson`, `usersJson`, `openTaskId` (auto-opens the task modal; matched against `dvId || id`), `languageCode` (`EN`/`PL`), `readOnly` (the string `"true"`).
 - **Outputs:** `updatedTasksJson`/`updatedBucketsJson` (the full current state), `updatedTaskId` + `newStatus` (the last changed task; `newStatus` is `"deleted"` for deletes), and `actionTrigger` (a `Date.now()` timestamp that changes on every meaningful action, so `OnChange` fires even when the other outputs are unchanged).
-- `OnChange` also fires when only the comment changed or when a task was reordered inside its bucket. The host checks for this by comparing the status with its local copy. To roll back a move it refused, such as a non-mentor moving a task to `reviewed`, the host re-sends `tasksJson` with a trailing space toggled. That changes the string, so the control re-parses it.
+- `OnChange` also fires when only the comment changed. The host checks for this by comparing the status with its local copy. To roll back a move it refused, such as a non-mentor moving a task to `reviewed`, the host re-sends `tasksJson` with a trailing space toggled. That changes the string, so the control re-parses it.
 - New or copied tasks get a random `id` and an empty `dvId`. The host app treats an empty `dvId` as "create" and a non-empty one as the Dataverse record id.
 - Inputs are re-parsed only when the raw string differs from the last one seen (`_lastTasksJson` etc.). A new `tasksJson` resets all transient UI state: menus, the create form, the modal and the delete confirmation.
 
@@ -50,7 +50,7 @@ All data moves as JSON strings through `SingleLine.Text` properties. The control
 ### Domain rules
 
 - A bucket's `id` is the task `status`; matching is case-insensitive. The workflow logic assumes the bucket ids `todo`, `inprogress`, `done` and `reviewed`.
-- `allowedTransitions` limits drag & drop moves. The map is duplicated in three drop handlers (`moveTaskRelative` for a drop onto a card, the column drop and the bottom drop zone); keep them in sync. After the check, all three call `applyStatusTransition(task, bucketId)`. It sets the status and updates the dates. `startDate` is set on entering `inprogress`. `completionDate` is set on `done` and cleared when going back. `reviewedDate` is set on entering `reviewed` if it is empty. `reviewedBy` and `reviewedDate` are cleared when leaving `reviewed`. It also recomputes `isOverdue`.
+- Drag & drop has a single drop handler on the column. Cards do not handle drops, so a drop onto a card bubbles up to its column. `allowedTransitions` there lists only moves to another bucket, so dropping a task in its own bucket does nothing. After the check, the handler calls `applyStatusTransition(task, bucketId)`. It sets the status and updates the dates. `startDate` is set on entering `inprogress` if it is empty. `completionDate` is set on `done` and cleared when going back. `reviewedDate` is set on entering `reviewed` if it is empty. `reviewedBy` and `reviewedDate` are cleared when leaving `reviewed`. It also recomputes `isOverdue`.
 - Dates are plain `yyyy-mm-dd` strings. Get today's date with `todayLocal()`, not `toISOString()`, which returns the UTC date.
 - Card timing labels are computed in the PCF by `getTimingInfo(task, bucketId)` on every render. Calendar days are counted with `daysBetween`, like `DateDiff(..., TimeUnit.Days)` in Power Fx.
   - `inprogress`: left = `estimate − (today − startDate)`. The label is `⏳ (Nd left)`, or `🔥 (Nd overdue)` when left is negative.
@@ -58,7 +58,12 @@ All data moves as JSON strings through `SingleLine.Text` properties. The control
   - `reviewed`: same as `done`. The card shows the `reviewedDate`, but the delay still comes from `completionDate`.
   - No `startDate`, or a non-numeric `estimate`: the label is empty.
 - The canvas app sends only clean dates and `estimate`. It never puts emoji or suffixes into date fields. `isOverdue` goes back to the host in `updatedTasksJson`.
-- Order inside a bucket is stored in `order`. `normalizeBucketOrder` renumbers it in steps of 10.
+- `displayOrder` comes from Dataverse and is the internship order of the task. It is shown as the `#N` badge and the PCF never changes it. Card order inside a bucket is not stored: `compareTasksInBucket` computes it on every render.
+  - `todo` and any other bucket: `displayOrder`, ascending.
+  - `inprogress`: `startDate`, newest first.
+  - `done`: `completionDate`, newest first.
+  - `reviewed`: `reviewedDate` (or `completionDate` if that is empty), newest first.
+  - Ties are broken by `displayOrder`. Tasks without the date or without `displayOrder` go last.
 - The task modal is mostly read-only. Only `comment` can be edited, and `closeTaskModal` commits the draft only when the comment changed. `description` is rich text and must go through `sanitizeHtml` before it is put into `innerHTML`.
 - Several editing features (bucket menu, add task, task "⋯" menu, add bucket) are implemented but their `appendChild` calls are commented out, so they are disabled in the current build.
 - UI strings live in `_labels` (EN and PL) and are read through `t(key)`. Add new strings to both languages.
