@@ -1400,13 +1400,8 @@ export class KanbanBoard {
       commentLabel.innerText = "Comment"; // или this.t("comment") если добавили в переводы
 
       const commentInput = document.createElement("textarea");
-      commentInput.className = "task-field-input";
-
-      commentInput.style.width = "100%";
-      commentInput.style.minHeight = "80px";
-      commentInput.style.resize = "vertical";
-      commentInput.style.fontFamily = "inherit";
-      commentInput.style.padding = "8px";
+      commentInput.className = "task-field-input task-comment-input";
+      commentInput.maxLength = 2000;
 
       commentInput.value = this._taskDraft.comment || "";
 
