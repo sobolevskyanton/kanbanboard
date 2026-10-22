@@ -773,33 +773,6 @@ select.create-input {
   border-left: 3px solid #cbd5e1;
 }
 
-.card.drop-before {
-  box-shadow: inset 0 3px 0 #111827;
-}
-.card.drop-after {
-  box-shadow: inset 0 -3px 0 #111827;
-}
-
-.column-drop-zone {
-  margin-top: 14px;
-  padding: 18px;
-  min-height: 80px; /* ✅ big target */
-  border: 2px dashed #d1d5db;
-  border-radius: 12px;
-  font-size: 12px;
-  opacity: 0.8;
-  text-align: center;
-  background: #f6f9ff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.column-drop-zone.is-over {
-  border-color: #111827;
-  opacity: 1;
-}
-
 /* ===== Delete Confirm Modal ===== */
 .confirm-overlay {
   position: absolute;
