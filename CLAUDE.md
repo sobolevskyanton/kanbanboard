@@ -39,6 +39,7 @@ All data moves as JSON strings through `SingleLine.Text` properties. The control
 
 - **Inputs (bound):** `tasksJson`, `bucketsJson`, `usersJson`, `openTaskId` (auto-opens the task modal; matched against `dvId || id`), `languageCode` (`EN`/`PL`), `readOnly` (the string `"true"`).
 - **Outputs:** `updatedTasksJson`/`updatedBucketsJson` (the full current state), `updatedTaskId` + `newStatus` (the last changed task; `newStatus` is `"deleted"` for deletes), and `actionTrigger` (a `Date.now()` timestamp that changes on every meaningful action, so `OnChange` fires even when the other outputs are unchanged).
+- `OnChange` also fires when only the comment changed or when a task was reordered inside its bucket. The host checks for this by comparing the status with its local copy. To roll back a move it refused, such as a non-mentor moving a task to `reviewed`, the host re-sends `tasksJson` with a trailing space toggled. That changes the string, so the control re-parses it.
 - New or copied tasks get a random `id` and an empty `dvId`. The host app treats an empty `dvId` as "create" and a non-empty one as the Dataverse record id.
 - Inputs are re-parsed only when the raw string differs from the last one seen (`_lastTasksJson` etc.). A new `tasksJson` resets all transient UI state: menus, the create form, the modal and the delete confirmation.
 
@@ -49,7 +50,14 @@ All data moves as JSON strings through `SingleLine.Text` properties. The control
 ### Domain rules
 
 - A bucket's `id` is the task `status`; matching is case-insensitive. The workflow logic assumes the bucket ids `todo`, `inprogress`, `done` and `reviewed`.
-- `allowedTransitions` limits drag & drop moves. Moving a task also updates its dates: `startDate` is set on entering `inprogress`, `completionDate` is set on `done` and cleared when going back, and `reviewedBy`/`reviewedDate` are cleared when leaving `reviewed`. This logic is **duplicated in three drop handlers**: `moveTaskRelative` (drop onto a card), the column drop and the bottom drop zone. Keep all three in sync.
+- `allowedTransitions` limits drag & drop moves. The map is duplicated in three drop handlers (`moveTaskRelative` for a drop onto a card, the column drop and the bottom drop zone); keep them in sync. After the check, all three call `applyStatusTransition(task, bucketId)`. It sets the status and updates the dates. `startDate` is set on entering `inprogress`. `completionDate` is set on `done` and cleared when going back. `reviewedDate` is set on entering `reviewed` if it is empty. `reviewedBy` and `reviewedDate` are cleared when leaving `reviewed`. It also recomputes `isOverdue`.
+- Dates are plain `yyyy-mm-dd` strings. Get today's date with `todayLocal()`, not `toISOString()`, which returns the UTC date.
+- Card timing labels are computed in the PCF by `getTimingInfo(task, bucketId)` on every render. Calendar days are counted with `daysBetween`, like `DateDiff(..., TimeUnit.Days)` in Power Fx.
+  - `inprogress`: left = `estimate − (today − startDate)`. The label is `⏳ (Nd left)`, or `🔥 (Nd overdue)` when left is negative.
+  - `done`: delay = `(completionDate − startDate) − estimate`, never below 0. The label is `⚠️ (Nd late)` when delay is above 0, otherwise `✅ (On time)`.
+  - `reviewed`: same as `done`. The card shows the `reviewedDate`, but the delay still comes from `completionDate`.
+  - No `startDate`, or a non-numeric `estimate`: the label is empty.
+- The canvas app sends only clean dates and `estimate`. It never puts emoji or suffixes into date fields. `isOverdue` goes back to the host in `updatedTasksJson`.
 - Order inside a bucket is stored in `order`. `normalizeBucketOrder` renumbers it in steps of 10.
 - The task modal is mostly read-only. Only `comment` can be edited, and `closeTaskModal` commits the draft only when the comment changed. `description` is rich text and must go through `sanitizeHtml` before it is put into `innerHTML`.
 - Several editing features (bucket menu, add task, task "⋯" menu, add bucket) are implemented but their `appendChild` calls are commented out, so they are disabled in the current build.
