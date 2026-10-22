@@ -29,6 +29,7 @@ interface Task {
   topic?: string;
   comment?: string;
   displayOrder?: number;
+  isOverdue?: boolean;
 }
 
 interface KanbanContext {
@@ -72,6 +73,14 @@ export class KanbanBoard {
       deleteBucketBlocked:
         "This bucket contains tasks. Move or delete them first.",
       topic: "Topic",
+      estimate: "Estimate",
+      finishDate: "Finish Date",
+      reviewedBy: "Reviewed by",
+      reviewedDate: "Reviewed Date",
+      daysLeft: "{0}d left",
+      daysOverdue: "{0}d overdue",
+      daysLate: "{0}d late",
+      onTime: "On time",
     },
     PL: {
       addTaskInline: "+ Dodaj zadanie",
@@ -106,6 +115,14 @@ export class KanbanBoard {
       deleteBucketBlocked:
         "Ten bucket zawiera zadania. Najpierw je przenieś lub usuń.",
       topic: "Temat",
+      estimate: "Szacowany czas",
+      finishDate: "Data ukończenia",
+      reviewedBy: "Sprawdzone przez",
+      reviewedDate: "Data sprawdzenia",
+      daysLeft: "pozostało {0} dni",
+      daysOverdue: "{0} dni po terminie",
+      daysLate: "{0} dni opóźnienia",
+      onTime: "W terminie",
     },
   };
 
@@ -184,6 +201,99 @@ export class KanbanBoard {
     });
 
     return template.innerHTML;
+  }
+
+  // Local date as yyyy-mm-dd (toISOString would give the UTC date).
+  private todayLocal(): string {
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    return `${now.getFullYear()}-${mm}-${dd}`;
+  }
+
+  // Calendar days between two yyyy-mm-dd dates, like DateDiff(..., TimeUnit.Days).
+  private daysBetween(from: string, to: string): number | null {
+    const toUtc = (value: string): number | null => {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+      if (!match) return null;
+      return Date.UTC(+match[1], +match[2] - 1, +match[3]);
+    };
+
+    const start = toUtc(from);
+    const end = toUtc(to);
+    if (start === null || end === null) return null;
+
+    return Math.round((end - start) / 86400000);
+  }
+
+  // Days late for a finished task: (completion - start) - estimate, never below 0.
+  private getDelayDays(task: Task): number | null {
+    const estimate = Number(task.estimate);
+    if (!task.startDate || !task.completionDate || task.estimate === "" || isNaN(estimate)) {
+      return null;
+    }
+
+    const spent = this.daysBetween(task.startDate, task.completionDate);
+    if (spent === null) return null;
+
+    return Math.max(0, spent - estimate);
+  }
+
+  // Timing suffix shown in brackets after the date, e.g. "⏳ (3d left)".
+  private getTimingInfo(task: Task, bucketId: string): { text: string; overdue: boolean } {
+    if (bucketId === "inprogress") {
+      const estimate = Number(task.estimate);
+      if (!task.startDate || task.estimate === "" || isNaN(estimate)) {
+        return { text: "", overdue: false };
+      }
+
+      const elapsed = this.daysBetween(task.startDate, this.todayLocal());
+      if (elapsed === null) return { text: "", overdue: false };
+
+      const left = estimate - elapsed;
+      return left < 0
+        ? { text: `🔥 (${this.t("daysOverdue").replace("{0}", String(-left))})`, overdue: true }
+        : { text: `⏳ (${this.t("daysLeft").replace("{0}", String(left))})`, overdue: false };
+    }
+
+    if (bucketId === "done" || bucketId === "reviewed") {
+      const delay = this.getDelayDays(task);
+      if (delay === null) return { text: "", overdue: false };
+
+      return delay > 0
+        ? { text: `⚠️ (${this.t("daysLate").replace("{0}", String(delay))})`, overdue: true }
+        : { text: `✅ (${this.t("onTime")})`, overdue: false };
+    }
+
+    return { text: "", overdue: false };
+  }
+
+  // Updates status and dates when a task moves to another bucket.
+  // Shared by all drop handlers so they stay in sync.
+  private applyStatusTransition(task: Task, targetBucketId: string): void {
+    const newBucketId = targetBucketId.toLowerCase();
+    task.status = targetBucketId;
+
+    const today = this.todayLocal();
+
+    if (newBucketId === "inprogress" && !task.startDate) {
+      task.startDate = today;
+    }
+
+    if (newBucketId === "done" && !task.completionDate) {
+      task.completionDate = today;
+    } else if (newBucketId === "inprogress" || newBucketId === "todo") {
+      task.completionDate = "";
+    }
+
+    if (newBucketId === "reviewed") {
+      if (!task.reviewedDate) task.reviewedDate = today;
+    } else {
+      task.reviewedBy = "";
+      task.reviewedDate = "";
+    }
+
+    task.isOverdue = this.getTimingInfo(task, newBucketId).overdue;
   }
 
   private _container!: HTMLDivElement;
@@ -435,25 +545,8 @@ export class KanbanBoard {
       return;
     }
 
-    // ensure correct bucket/status
-    draggedTask.status = targetBucketId;
-
-    const today = new Date().toISOString().split("T")[0];
-
-    if (newBucketId === "inprogress" && !draggedTask.startDate) {
-      draggedTask.startDate = today;
-    }
-
-    if (newBucketId === "done" && !draggedTask.completionDate) {
-      draggedTask.completionDate = today;
-    } else if (newBucketId === "inprogress" || newBucketId === "todo") {
-      draggedTask.completionDate = "";
-    }
-
-    if (newBucketId !== "reviewed") {
-      draggedTask.reviewedBy = "";
-      draggedTask.reviewedDate = "";
-    }
+    // ensure correct bucket/status and dates
+    this.applyStatusTransition(draggedTask, targetBucketId);
 
     // remove dragged item
     this._tasks.splice(draggedIndex, 1);
@@ -630,24 +723,7 @@ export class KanbanBoard {
             this.updateViewSafe();
             return;
           }
-          task.status = bucket.id;
-
-          const today = new Date().toISOString().split("T")[0];
-
-          if (newBucketId === "inprogress" && !task.startDate) {
-            task.startDate = today;
-          }
-
-          if (newBucketId === "done" && !task.completionDate) {
-            task.completionDate = today;
-          } else if (newBucketId === "inprogress" || newBucketId === "todo") {
-            task.completionDate = "";
-          }
-
-          if (newBucketId !== "reviewed") {
-            task.reviewedBy = "";
-            task.reviewedDate = "";
-          }
+          this.applyStatusTransition(task, bucket.id);
 
           // put at end
           const bucketTasks = this._tasks.filter(
@@ -1035,14 +1111,18 @@ export class KanbanBoard {
 
         const bucketId = (bucket.id || "").toLowerCase();
 
+        const timing = this.getTimingInfo(task, bucketId).text;
+        const withTiming = (date?: string): string =>
+          date && timing ? `${date} ${timing}` : date || "";
+
         if (bucketId === "todo") {
-          meta.innerText = `Estimate: ${task.estimate || ""}d`;
+          meta.innerText = `${this.t("estimate")}: ${task.estimate || ""}d`;
         } else if (bucketId === "inprogress") {
-          meta.innerText = `Start Date: ${task.startDate || ""}`;
+          meta.innerText = `${this.t("startDate")}: ${withTiming(task.startDate)}`;
         } else if (bucketId === "done") {
-          meta.innerText = `Finish Date: ${task.completionDate || ""}`;
+          meta.innerText = `${this.t("finishDate")}: ${withTiming(task.completionDate)}`;
         } else if (bucketId === "reviewed") {
-          meta.innerText = `Reviewed by: ${task.reviewedBy || ""}\nReviewed Date: ${task.reviewedDate || ""}`;
+          meta.innerText = `${this.t("reviewedBy")}: ${task.reviewedBy || ""}\n${this.t("reviewedDate")}: ${withTiming(task.reviewedDate)}`;
         }
 
         content.appendChild(meta);
@@ -1242,24 +1322,7 @@ export class KanbanBoard {
             this.updateViewSafe();
             return;
           }
-          t.status = bucket.id;
-
-          const today = new Date().toISOString().split("T")[0];
-
-          if (newBucketId === "inprogress" && !t.startDate) {
-            t.startDate = today;
-          }
-
-          if (newBucketId === "done" && !t.completionDate) {
-            t.completionDate = today;
-          } else if (newBucketId === "inprogress" || newBucketId === "todo") {
-            t.completionDate = "";
-          }
-
-          if (newBucketId !== "reviewed") {
-            t.reviewedBy = "";
-            t.reviewedDate = "";
-          }
+          this.applyStatusTransition(t, bucket.id);
 
           // force to end by order
           const bucketTasks = this._tasks.filter(
